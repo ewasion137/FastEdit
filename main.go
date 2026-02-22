@@ -3,9 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -13,149 +11,142 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// --- СТИЛИ ---
+// --- TOKYO NIGHT THEME ---
 var (
-	statusNormalStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFF")).Background(lipgloss.Color("#5A56E0")).Bold(true)
-	statusInsertStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFF")).Background(lipgloss.Color("#04B575")).Bold(true)
-	statusGitStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFF")).Background(lipgloss.Color("#FF5F87")).Padding(0, 1)
-	statusMessageStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFF00")).Background(lipgloss.Color("#5A56E0"))
-	logoStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#04B575")).Align(lipgloss.Center)
+	bgDark   = lipgloss.Color("#1a1b26")
+	bgLight  = lipgloss.Color("#24283b")
+	fg       = lipgloss.Color("#a9b1d6")
+	blue     = lipgloss.Color("#7aa2f7")
+	green    = lipgloss.Color("#9ece6a")
+	magenta  = lipgloss.Color("#bb9af7")
+	red      = lipgloss.Color("#f7768e")
+	yellow   = lipgloss.Color("#e0af68")
+	
+	cursorStyle        = lipgloss.NewStyle().Foreground(bgDark).Background(blue)
+	topBarStyle        = lipgloss.NewStyle().Foreground(fg).Background(bgLight).Padding(0, 1)
+	statusNormalStyle  = lipgloss.NewStyle().Foreground(bgDark).Background(blue).Bold(true).Padding(0, 1)
+	statusInsertStyle  = lipgloss.NewStyle().Foreground(bgDark).Background(green).Bold(true).Padding(0, 1)
+	statusGitStyle     = lipgloss.NewStyle().Foreground(fg).Background(bgLight).Padding(0, 1)
+	statusMessageStyle = lipgloss.NewStyle().Foreground(yellow).Background(bgDark).Padding(0, 1)
+	
+	logoStyle = lipgloss.NewStyle().Bold(true).Foreground(blue).Align(lipgloss.Center)
+	welcomeSubStyle = lipgloss.NewStyle().Foreground(fg).Align(lipgloss.Center)
 )
 
-type editorMode int
-const (
-	modeNormal editorMode = iota
-	modeInsert
-	modeCommand
-)
+func (m model) Init() tea.Cmd { return nil }
 
-type clearStatusMsg struct{}
-
-// --- МОДЕЛЬ ---
-type model struct {
-	textarea     textarea.Model
-	commandInput textinput.Model
-	mode         editorMode
-	isDirty      bool
-	isWelcome    bool
-	statusMessage string
-	filename     string
-	gitBranch    string
-	width        int
-	height       int
-}
-
-func getGitBranch() string {
-	cmd := exec.Command("git", "branch", "--show-current")
-	out, _ := cmd.Output()
-	return strings.TrimSpace(string(out))
-}
-
-func initialModel(filename string) model {
-	ti := textarea.New()
-	ti.ShowLineNumbers = true
-	ti.Placeholder = "Начни путь..."
-
-	ci := textinput.New()
-	ci.Prompt = ":"
-
-	isWelcome := filename == ""
-	if !isWelcome {
-		content, err := os.ReadFile(filename)
-		if err == nil {
-			ti.SetValue(string(content))
-		}
-	}
-
-	return model{
-		textarea:     ti,
-		commandInput: ci,
-		mode:         modeNormal,
-		isWelcome:    isWelcome,
-		filename:     filename,
-		gitBranch:    getGitBranch(),
-	}
-}
-
-func (m model) Init() tea.Cmd {
-	return nil
-}
-
-// --- UPDATE ---
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.textarea.SetHeight(m.height - 1)
+		m.textarea.SetHeight(m.height - 2)
 		m.textarea.SetWidth(m.width)
-		m.commandInput.Width = m.width - 2
+		m.commandInput.Width = m.width - 4
 		return m, nil
 	case clearStatusMsg:
 		m.statusMessage = ""
 		return m, nil
 	}
 
-	// Если экран приветствия - любая кнопка убирает его
 	if m.isWelcome {
-		if _, ok := msg.(tea.KeyMsg); ok {
-			m.isWelcome = false
-			return m, nil
-		}
+		if _, ok := msg.(tea.KeyMsg); ok { m.isWelcome = false; return m, nil }
 	}
 
 	switch m.mode {
+	// ================= NORMAL MODE =================
 	case modeNormal:
 		if k, ok := msg.(tea.KeyMsg); ok {
-			switch k.String() {
-			case "i":
-				m.mode = modeInsert
-				m.textarea.Focus()
-				return m, textarea.Blink
-			case "a":
-				m.mode = modeInsert
-				m.textarea.Focus()
-				// Эмулируем нажатие "вправо" через Update самого textarea
-				m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyRight})
-				return m, textarea.Blink
+			key := k.String()
 			
-			// VIM НАВИГАЦИЯ через эмуляцию клавиш стрелок
-			case "h": m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyLeft})
-			case "j": m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyDown})
-			case "k": m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyUp})
-			case "l": m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyRight})
+			// --- ОДИНОЧНЫЕ КОМАНДЫ (сразу сбрасываем буфер) ---
+			switch key {
+			case "i": m.mode = modeInsert; m.textarea.Focus(); m.keyBuffer = ""; return m, textarea.Blink
+			case "a": m.mode = modeInsert; m.textarea.Focus(); m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyRight}); m.keyBuffer = ""; return m, textarea.Blink
+			case ":": m.mode = modeCommand; m.commandInput.Focus(); m.commandInput.SetValue(""); m.keyBuffer = ""; return m, textinput.Blink
+			
+			case "h": m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyLeft}); m.keyBuffer = ""; return m, nil
+			case "j": m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyDown}); m.keyBuffer = ""; return m, nil
+			case "k": m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyUp}); m.keyBuffer = ""; return m, nil
+			case "l": m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyRight}); m.keyBuffer = ""; return m, nil
+			
+			// Прыжок в начало/конец СТРОКИ (эмулируем Ctrl+A и Ctrl+E, это стандарт терминала)
+			case "0": m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyCtrlA}); m.keyBuffer = ""; return m, nil
+			case "$": m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyCtrlE}); m.keyBuffer = ""; return m, nil
 
-			case ":":
-				m.mode = modeCommand
-				m.commandInput.Focus()
-				m.commandInput.SetValue("")
+			// Прыжок в конец ФАЙЛА (G)
+			case "G":
+				linesCount := len(strings.Split(m.textarea.Value(), "\n"))
+				// Просто "зажимаем" кнопку вниз до упора
+				for i := 0; i < linesCount; i++ {
+					m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyDown})
+				}
+				// И ставим курсор в конец строки
+				m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+				m.keyBuffer = ""
+				return m, nil
+
+			case "u": m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyCtrlZ}); m.keyBuffer = ""; return m, nil
+			case "p": m = m.pasteFromClipboard(); m.keyBuffer = ""; return m, clearStatusCmd()
+			}
+
+			// --- СЛОЖНЫЕ КОМАНДЫ (накапливаем в буфер) ---
+			m.keyBuffer += key
+
+			if strings.HasSuffix(m.keyBuffer, "dd") {
+				m = m.deleteCurrentLine()
+				m.keyBuffer = ""
+				return m, clearStatusCmd()
+			}
+			if strings.HasSuffix(m.keyBuffer, "yy") {
+				m = m.copyLineToClipboard()
+				m.keyBuffer = ""
+				return m, clearStatusCmd()
+			}
+			
+			// Прыжок в начало ФАЙЛА (gg)
+			if strings.HasSuffix(m.keyBuffer, "gg") {
+				linesCount := len(strings.Split(m.textarea.Value(), "\n"))
+				// "Зажимаем" кнопку вверх до упора
+				for i := 0; i < linesCount; i++ {
+					m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyUp})
+				}
+				// И ставим курсор в начало строки
+				m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+				m.keyBuffer = ""
 				return m, nil
 			}
+
+			// Очистка буфера от мусора (если нажал фигню)
+			if len(m.keyBuffer) > 2 { m.keyBuffer = "" }
+			return m, nil
 		}
 
+	// ================= INSERT MODE =================
 	case modeInsert:
-		if k, ok := msg.(tea.KeyMsg); ok && k.String() == "esc" {
-			m.mode = modeNormal
-			m.textarea.Blur()
-			return m, nil
+		if k, ok := msg.(tea.KeyMsg); ok {
+			if k.String() == "esc" { m.mode = modeNormal; m.textarea.Blur(); return m, nil }
+			
+			// Автозакрытие скобок
+			char := k.String()
+			pairs := map[string]string{ "{": "}", "[": "]", "(": ")", "\"": "\"", "'": "'" }
+			if closing, exists := pairs[char]; exists {
+				m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(char + closing)})
+				m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyLeft})
+				m.isDirty = true
+				return m, nil
+			}
 		}
 		m.isDirty = true
 		m.textarea, cmd = m.textarea.Update(msg)
 		return m, cmd
 
+	// ================= COMMAND MODE =================
 	case modeCommand:
 		if k, ok := msg.(tea.KeyMsg); ok {
-			if k.String() == "esc" {
-				m.mode = modeNormal
-				m.commandInput.Blur()
-				return m, nil
-			}
-			if k.String() == "enter" {
-				command := m.commandInput.Value()
-				m, cmd = m.executeCommand(command)
-				return m, cmd
-			}
+			if k.String() == "esc" { m.mode = modeNormal; m.commandInput.Blur(); return m, nil }
+			if k.String() == "enter" { return m.executeCommand(m.commandInput.Value()) }
 		}
 		m.commandInput, cmd = m.commandInput.Update(msg)
 		return m, cmd
@@ -164,103 +155,72 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// --- VIEW ---
 func (m model) View() string {
 	if m.isWelcome {
-		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, 
-			logoStyle.Render("FAST EDIT\n\n[i] Вставка | [:] Команды"))
+		logo := `
+   _____         __   ______    ___ __ 
+  / __/___ ____ / /_ / __/ /_  (_) // /_
+ / _// __// __// __// _// __/ / / // __/
+/_/  \__//_/   \__//___/\__/ /_//_/\__/ 
+                                        
+`
+		fullContent := lipgloss.JoinVertical(lipgloss.Center,
+			logoStyle.Render(logo),
+			welcomeSubStyle.Render("Премиальный TUI Редактор • Tokyo Night"),
+			"\n",
+			lipgloss.NewStyle().Foreground(magenta).Render("[i] Вставка • [:] Команды • [dd] Удалить • [gg] Вверх"),
+		)
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, fullContent)
 	}
+
+	fname := m.filename
+	if fname == "" { fname = "Новый_файл" }
+	dirtyIcon := ""
+	if m.isDirty { dirtyIcon = lipgloss.NewStyle().Foreground(red).Render(" ●") }
+	
+	fileTab := lipgloss.NewStyle().Foreground(lipgloss.Color(m.fileType.color)).Render(m.fileType.icon + " " + fname)
+	topBarLeft := topBarStyle.Render(fileTab + dirtyIcon)
+	topBarRight := topBarStyle.Render(m.fileType.name)
+	
+	topGap := strings.Repeat(" ", max(0, m.width-lipgloss.Width(topBarLeft)-lipgloss.Width(topBarRight)))
+	topBar := lipgloss.NewStyle().Background(bgLight).Render(topBarLeft + topGap + topBarRight)
 
 	var bottomBar string
 	if m.statusMessage != "" {
 		bottomBar = statusMessageStyle.Width(m.width).Render(" " + m.statusMessage)
 	} else if m.mode == modeCommand {
-		bottomBar = m.commandInput.View()
+		bottomBar = lipgloss.NewStyle().Background(bgLight).Width(m.width).Render(m.commandInput.View())
 	} else {
-		modeStr := " NORMAL "
-		style := statusNormalStyle
-		if m.mode == modeInsert {
-			modeStr = " INSERT "
-			style = statusInsertStyle
-		}
+		modeStr, style := " NORMAL ", statusNormalStyle
+		if m.mode == modeInsert { modeStr, style = " INSERT ", statusInsertStyle }
 		
-		gitBlock := ""
-		if m.gitBranch != "" {
-			gitBlock = statusGitStyle.Render(" " + m.gitBranch)
-		}
-
-		dirty := ""
-		if m.isDirty { dirty = "*" }
-		fname := m.filename
-		if fname == "" { fname = "[No Name]" }
+		git := ""
+		if m.gitBranch != "" { git = statusGitStyle.Render(" " + m.gitBranch) }
 		
-		left := lipgloss.JoinHorizontal(lipgloss.Top, style.Render(modeStr), gitBlock, " "+fname+dirty)
-		pos := fmt.Sprintf("Ln %d ", m.textarea.Line()+1)
+		pos := lipgloss.NewStyle().Foreground(blue).Background(bgLight).Padding(0, 1).Render(
+			fmt.Sprintf("Ln %d", m.textarea.Line()+1),
+		)
 		
-		gap := strings.Repeat(" ", max(0, m.width-lipgloss.Width(left)-lipgloss.Width(pos)))
-		bottomBar = style.Render(left + gap + pos)
+		leftSide := lipgloss.JoinHorizontal(lipgloss.Top, style.Render(modeStr), git)
+		botGap := strings.Repeat(" ", max(0, m.width-lipgloss.Width(leftSide)-lipgloss.Width(pos)))
+		bottomBar = lipgloss.NewStyle().Background(bgLight).Render(leftSide + botGap + pos)
 	}
 
-	return fmt.Sprintf("%s\n%s", m.textarea.View(), bottomBar)
+	return lipgloss.JoinVertical(lipgloss.Left,
+		topBar,
+		m.textarea.View(),
+		bottomBar,
+	)
 }
 
-func (m model) executeCommand(cmdStr string) (model, tea.Cmd) {
-	parts := strings.Fields(cmdStr)
-	m.mode = modeNormal
-	m.commandInput.Blur()
-
-	if len(parts) == 0 { return m, nil }
-
-	switch parts[0] {
-	case "q", "quit":
-		if m.isDirty {
-			m.statusMessage = "Не сохранено! Добавь !"
-			return m, clearStatusCmd()
-		}
-		return m, tea.Quit
-	case "q!":
-		return m, tea.Quit
-	case "w", "write":
-		if len(parts) > 1 { m.filename = parts[1] }
-		return m.saveFile()
-	case "commit":
-		if len(parts) < 2 {
-			m.statusMessage = "Error: Нужно сообщение"
-		} else {
-			m, _ = m.saveFile()
-			exec.Command("git", "add", m.filename).Run()
-			msg := strings.Join(parts[1:], " ")
-			exec.Command("git", "commit", "-m", msg).Run()
-			m.statusMessage = "Коммит создан!"
-		}
-		return m, clearStatusCmd()
-	}
-	return m, nil
+func max(a, b int) int {
+	if a > b { return a }
+	return b
 }
-
-func (m model) saveFile() (model, tea.Cmd) {
-	if m.filename == "" {
-		m.statusMessage = "Error: Нет имени"
-		return m, clearStatusCmd()
-	}
-	_ = os.WriteFile(m.filename, []byte(m.textarea.Value()), 0644)
-	m.statusMessage = "Сохранено!"
-	m.isDirty = false
-	m.gitBranch = getGitBranch()
-	return m, clearStatusCmd()
-}
-
-func clearStatusCmd() tea.Cmd {
-	return tea.Tick(time.Second*3, func(t time.Time) tea.Msg { return clearStatusMsg{} })
-}
-
-func max(a, b int) int { if a > b { return a }; return b }
 
 func main() {
 	arg := ""
 	if len(os.Args) > 1 { arg = os.Args[1] }
 	p := tea.NewProgram(initialModel(arg), tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
-		fmt.Println(err)
-	}
+	if _, err := p.Run(); err != nil { fmt.Println(err) }
 }
