@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -14,16 +15,13 @@ import (
 
 // --- СТИЛИ ---
 var (
-	// Стили для статус-бара в зависимости от режима
-	statusNormalStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFF")).Background(lipgloss.Color("#5A56E0"))
-	statusInsertStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFF")).Background(lipgloss.Color("#04B575"))
-	statusCmdStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFF")).Background(lipgloss.Color("#B45EEA"))
-	
-	statusMessageStyle = lipgloss.NewStyle().Inherit(statusNormalStyle).Foreground(lipgloss.Color("#FFFF00"))
-	logoStyle          = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#04B575")).Align(lipgloss.Center)
+	statusNormalStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFF")).Background(lipgloss.Color("#5A56E0")).Bold(true)
+	statusInsertStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFF")).Background(lipgloss.Color("#04B575")).Bold(true)
+	statusGitStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFF")).Background(lipgloss.Color("#FF5F87")).Padding(0, 1)
+	statusMessageStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFF00")).Background(lipgloss.Color("#5A56E0"))
+	logoStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#04B575")).Align(lipgloss.Center)
 )
 
-// --- РЕЖИМЫ РЕДАКТОРА ---
 type editorMode int
 const (
 	modeNormal editorMode = iota
@@ -31,10 +29,9 @@ const (
 	modeCommand
 )
 
-// Сообщение для сброса статуса
 type clearStatusMsg struct{}
 
-// --- ГЛАВНАЯ МОДЕЛЬ ---
+// --- МОДЕЛЬ ---
 type model struct {
 	textarea     textarea.Model
 	commandInput textinput.Model
@@ -43,48 +40,49 @@ type model struct {
 	isWelcome    bool
 	statusMessage string
 	filename     string
+	gitBranch    string
 	width        int
 	height       int
 }
 
+func getGitBranch() string {
+	cmd := exec.Command("git", "branch", "--show-current")
+	out, _ := cmd.Output()
+	return strings.TrimSpace(string(out))
+}
+
 func initialModel(filename string) model {
 	ti := textarea.New()
-	// ВАЖНО: Редактор стартует в Normal режиме, поэтому поле НЕ в фокусе.
-	// ti.Focus() -> УБРАЛИ
 	ti.ShowLineNumbers = true
-	ti.Placeholder = "..."
+	ti.Placeholder = "Начни путь..."
 
 	ci := textinput.New()
 	ci.Prompt = ":"
-	ci.CharLimit = 100
 
-	isWelcome := false
-	if filename != "" {
+	isWelcome := filename == ""
+	if !isWelcome {
 		content, err := os.ReadFile(filename)
 		if err == nil {
 			ti.SetValue(string(content))
 		}
-	} else {
-		isWelcome = true
 	}
 
 	return model{
 		textarea:     ti,
 		commandInput: ci,
-		mode:         modeNormal, // Начинаем в NORMAL режиме!
+		mode:         modeNormal,
 		isWelcome:    isWelcome,
 		filename:     filename,
-		isDirty:      false,
+		gitBranch:    getGitBranch(),
 	}
 }
 
 func (m model) Init() tea.Cmd {
-	return nil // Убрали Blink, так как курсора в Normal режиме нет
+	return nil
 }
 
 // --- UPDATE ---
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
@@ -97,208 +95,172 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case clearStatusMsg:
 		m.statusMessage = ""
 		return m, nil
-	case tea.KeyMsg:
-		if m.isWelcome {
+	}
+
+	// Если экран приветствия - любая кнопка убирает его
+	if m.isWelcome {
+		if _, ok := msg.(tea.KeyMsg); ok {
 			m.isWelcome = false
+			return m, nil
 		}
 	}
 
-	// ЛОГИКА РЕЖИМОВ
 	switch m.mode {
-	// --- NORMAL MODE --- (команды одной кнопкой)
 	case modeNormal:
-		switch msg := msg.(type) {
-		case tea.KeyMsg:
-			switch msg.String() {
-			// Переход в Insert режим
+		if k, ok := msg.(tea.KeyMsg); ok {
+			switch k.String() {
 			case "i":
 				m.mode = modeInsert
 				m.textarea.Focus()
-				return m, textarea.Blink // Запускаем мигание курсора
-			// Переход в Command режим
+				return m, textarea.Blink
+			case "a":
+				m.mode = modeInsert
+				m.textarea.Focus()
+				// Эмулируем нажатие "вправо" через Update самого textarea
+				m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyRight})
+				return m, textarea.Blink
+			
+			// VIM НАВИГАЦИЯ через эмуляцию клавиш стрелок
+			case "h": m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyLeft})
+			case "j": m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyDown})
+			case "k": m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyUp})
+			case "l": m.textarea, _ = m.textarea.Update(tea.KeyMsg{Type: tea.KeyRight})
+
 			case ":":
 				m.mode = modeCommand
 				m.commandInput.Focus()
 				m.commandInput.SetValue("")
 				return m, nil
-			case "ctrl+s":
-				m, cmd = m.saveFile()
-				return m, cmd
-			// В будущем здесь будут команды 'dd', 'yy', 'p' и т.д.
 			}
 		}
 
-	// --- INSERT MODE --- (ввод текста)
 	case modeInsert:
-		switch msg := msg.(type) {
-		case tea.KeyMsg:
-			switch msg.String() {
-			// Возврат в Normal режим
-			case "esc":
-				m.mode = modeNormal
-				m.textarea.Blur() // Снимаем фокус с поля ввода
-				return m, nil
-			// Любое другое нажатие - это ввод текста
-			default:
-				m.isDirty = true
-			}
+		if k, ok := msg.(tea.KeyMsg); ok && k.String() == "esc" {
+			m.mode = modeNormal
+			m.textarea.Blur()
+			return m, nil
 		}
+		m.isDirty = true
+		m.textarea, cmd = m.textarea.Update(msg)
+		return m, cmd
 
-	// --- COMMAND MODE --- (ввод команд в строке)
 	case modeCommand:
-		switch msg := msg.(type) {
-		case tea.KeyMsg:
-			switch msg.String() {
-			case "esc":
+		if k, ok := msg.(tea.KeyMsg); ok {
+			if k.String() == "esc" {
 				m.mode = modeNormal
 				m.commandInput.Blur()
 				return m, nil
-			case "enter":
+			}
+			if k.String() == "enter" {
 				command := m.commandInput.Value()
 				m, cmd = m.executeCommand(command)
 				return m, cmd
 			}
 		}
-	}
-
-	// Передаем сообщение активному компоненту
-	if m.mode == modeInsert {
-		m.textarea, cmd = m.textarea.Update(msg)
-	} else if m.mode == modeCommand {
 		m.commandInput, cmd = m.commandInput.Update(msg)
+		return m, cmd
 	}
-	cmds = append(cmds, cmd)
 
-	return m, tea.Batch(cmds...)
+	return m, nil
 }
 
 // --- VIEW ---
 func (m model) View() string {
 	if m.isWelcome {
-		// ASCII art...
-		logo := `... Твой ASCII арт ...`
-		info := "\nНажми 'i', чтобы начать печатать."
-		fullContent := lipgloss.JoinVertical(lipgloss.Center, logoStyle.Render(logo), info)
-		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, fullContent)
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, 
+			logoStyle.Render("FAST EDIT\n\n[i] Вставка | [:] Команды"))
 	}
 
 	var bottomBar string
 	if m.statusMessage != "" {
-		bottomBar = statusMessageStyle.Width(m.width).Render(m.statusMessage)
+		bottomBar = statusMessageStyle.Width(m.width).Render(" " + m.statusMessage)
 	} else if m.mode == modeCommand {
 		bottomBar = m.commandInput.View()
 	} else {
-		// --- СТАТУС-БАР В NORMAL/INSERT РЕЖИМАХ ---
-		var modeText string
-		var style lipgloss.Style
-
-		if m.mode == modeNormal {
-			modeText = "-- NORMAL --"
-			style = statusNormalStyle
-		} else {
-			modeText = "-- INSERT --"
+		modeStr := " NORMAL "
+		style := statusNormalStyle
+		if m.mode == modeInsert {
+			modeStr = " INSERT "
 			style = statusInsertStyle
 		}
 		
-		dirtyFlag := ""
-		if m.isDirty {
-			dirtyFlag = "*"
+		gitBlock := ""
+		if m.gitBranch != "" {
+			gitBlock = statusGitStyle.Render(" " + m.gitBranch)
 		}
-		
-		filename := m.filename
-		if filename == "" {
-			filename = "[No Name]"
-		}
-		
-		modeBlock := style.Render(modeText)
-		fileBlock := style.Padding(0, 1).Render(filename + dirtyFlag)
-		posBlock := style.Padding(0, 1).Render(fmt.Sprintf("Ln %d", m.textarea.Line()+1))
-		
-		w := m.width - lipgloss.Width(modeBlock) - lipgloss.Width(fileBlock) - lipgloss.Width(posBlock)
-		if w < 0 { w = 0 }
-		gap := style.Render(strings.Repeat(" ", w))
 
-		bottomBar = lipgloss.JoinHorizontal(lipgloss.Top, modeBlock, fileBlock, gap, posBlock)
+		dirty := ""
+		if m.isDirty { dirty = "*" }
+		fname := m.filename
+		if fname == "" { fname = "[No Name]" }
+		
+		left := lipgloss.JoinHorizontal(lipgloss.Top, style.Render(modeStr), gitBlock, " "+fname+dirty)
+		pos := fmt.Sprintf("Ln %d ", m.textarea.Line()+1)
+		
+		gap := strings.Repeat(" ", max(0, m.width-lipgloss.Width(left)-lipgloss.Width(pos)))
+		bottomBar = style.Render(left + gap + pos)
 	}
 
 	return fmt.Sprintf("%s\n%s", m.textarea.View(), bottomBar)
 }
 
-
-// --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
-func clearStatusCmd() tea.Cmd {
-	return tea.Tick(time.Second*2, func(t time.Time) tea.Msg {
-		return clearStatusMsg{}
-	})
-}
-
 func (m model) executeCommand(cmdStr string) (model, tea.Cmd) {
 	parts := strings.Fields(cmdStr)
-	if len(parts) == 0 {
-		m.mode = modeNormal
-		return m, nil
-	}
+	m.mode = modeNormal
+	m.commandInput.Blur()
 
-	command := parts[0]
-	switch command {
+	if len(parts) == 0 { return m, nil }
+
+	switch parts[0] {
 	case "q", "quit":
 		if m.isDirty {
-			m.statusMessage = "Есть несохраненные изменения! (используй :q!)"
-			m.mode = modeNormal
+			m.statusMessage = "Не сохранено! Добавь !"
 			return m, clearStatusCmd()
 		}
 		return m, tea.Quit
-	case "q!", "quit!":
+	case "q!":
 		return m, tea.Quit
-	// Команды :w, :write, :save, :saveas делают одно и то же
-	case "w", "write", "save", "saveas":
-		if len(parts) > 1 {
-			m.filename = parts[1] // ":w new.txt" -> сохраняем как new.txt
-		}
+	case "w", "write":
+		if len(parts) > 1 { m.filename = parts[1] }
 		return m.saveFile()
-	case "wq":
-		newModel, cmd := m.saveFile()
-		if newModel.statusMessage != "" && strings.HasPrefix(newModel.statusMessage, "Error") {
-			return newModel, cmd
+	case "commit":
+		if len(parts) < 2 {
+			m.statusMessage = "Error: Нужно сообщение"
+		} else {
+			m, _ = m.saveFile()
+			exec.Command("git", "add", m.filename).Run()
+			msg := strings.Join(parts[1:], " ")
+			exec.Command("git", "commit", "-m", msg).Run()
+			m.statusMessage = "Коммит создан!"
 		}
-		return newModel, tea.Batch(cmd, tea.Quit)
-	default:
-		m.statusMessage = fmt.Sprintf("Неизвестная команда: %s", command)
-		m.mode = modeNormal
 		return m, clearStatusCmd()
 	}
+	return m, nil
 }
 
 func (m model) saveFile() (model, tea.Cmd) {
 	if m.filename == "" {
-		m.statusMessage = "Error: Имя файла не задано. Используй :w <имя файла>"
-		m.mode = modeNormal
+		m.statusMessage = "Error: Нет имени"
 		return m, clearStatusCmd()
 	}
-	
-	err := os.WriteFile(m.filename, []byte(m.textarea.Value()), 0644)
-	if err != nil {
-		m.statusMessage = fmt.Sprintf("Error: %v", err)
-	} else {
-		m.statusMessage = fmt.Sprintf("Файл '%s' сохранен.", m.filename)
-		m.isDirty = false
-	}
-	
-	m.mode = modeNormal
+	_ = os.WriteFile(m.filename, []byte(m.textarea.Value()), 0644)
+	m.statusMessage = "Сохранено!"
+	m.isDirty = false
+	m.gitBranch = getGitBranch()
 	return m, clearStatusCmd()
 }
 
+func clearStatusCmd() tea.Cmd {
+	return tea.Tick(time.Second*3, func(t time.Time) tea.Msg { return clearStatusMsg{} })
+}
+
+func max(a, b int) int { if a > b { return a }; return b }
+
 func main() {
-	// ... код main без изменений ...
-	filename := ""
-	if len(os.Args) > 1 {
-		filename = os.Args[1]
-	}
-
-	p := tea.NewProgram(initialModel(filename), tea.WithAltScreen(), tea.WithMouseCellMotion())
-
+	arg := ""
+	if len(os.Args) > 1 { arg = os.Args[1] }
+	p := tea.NewProgram(initialModel(arg), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
-		fmt.Printf("Fatal error: %v", err)
-		os.Exit(1)
+		fmt.Println(err)
 	}
 }
